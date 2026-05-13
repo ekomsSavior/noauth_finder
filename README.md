@@ -55,7 +55,7 @@ Scans any IP range for web interfaces that don't require a login. If it's servin
 ```bash
 git clone https://github.com/ekomsSavior/NoAuth-Finder.git
 cd NoAuth-Finder
-pip install requests
+pip install requests 
 
 # Single host
 python3 noauth_finder.py 192.168.1.100
