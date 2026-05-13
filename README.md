@@ -2,7 +2,6 @@
 
 **Find unauthenticated web interfaces — local network or internet-scale**
 
-[![Church-of-Malware](https://img.shields.io/badge/Church-of-Malware-gray)](churchofmalware)
 [![ek0ms](https://img.shields.io/badge/ek0ms-green)](ek0ms)
 
 ---
