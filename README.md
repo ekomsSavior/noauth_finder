@@ -22,7 +22,7 @@ Scans any IP range for web interfaces that don't require a login. If it's servin
 
 | Type | Examples |
 |------|----------|
-| C2 Panels | Nightcrawler, generic botnet dashboards, agent consoles |
+| C2 Panels | botnet dashboards, agent consoles |
 | Infrastructure | Kubernetes, Grafana, Prometheus, Portainer, Jenkins |
 | Network Gear | Routers, APs, ESXi, Webmin, Cockpit |
 | IoT/Embedded | Cameras, printers, NAS (Synology/QNAP), Pi-hole |
