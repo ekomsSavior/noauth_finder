@@ -17,6 +17,7 @@ import ssl
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -185,6 +186,7 @@ THREAD_LOCAL = threading.local()
 STATE_LOCK = threading.Lock()
 ENRICH_CACHE = {}
 ENRICH_LOCK = threading.Lock()
+PRINT_LOCK = threading.Lock()
 
 
 def utc_now():
@@ -805,6 +807,199 @@ def scan_host_ports(host, ports, timeout=5, fast=False, ipv6=False, host_timeout
     return results
 
 
+def summarize_results_for_live(host, results):
+    filtered = {p: r for p, r in results.items() if not str(p).startswith("_")}
+    enrichment = results.get("_enrichment", {})
+
+    summary = {
+        "host": host,
+        "has_results": bool(filtered),
+        "open_ports": sorted(filtered.keys()),
+        "auth_ports": [],
+        "noauth_ports": [],
+        "status_codes": [],
+        "tech": [],
+        "titles": [],
+        "max_score": 0,
+        "max_severity": None,
+        "max_reasons": [],
+        "network": None,
+        "ptr": None,
+    }
+
+    if not filtered:
+        return summary
+
+    rdap = enrichment.get("rdap", {}) or {}
+    reverse = enrichment.get("reverse_dns", {}) or {}
+    summary["network"] = rdap.get("name")
+    summary["ptr"] = reverse.get("ptr")
+
+    tech_set = set()
+    titles = []
+
+    for port, response in filtered.items():
+        if response.get("auth"):
+            summary["auth_ports"].append(port)
+        else:
+            summary["noauth_ports"].append(port)
+
+        if response.get("status") is not None:
+            summary["status_codes"].append(response.get("status"))
+
+        if response.get("title"):
+            titles.append(response.get("title"))
+
+        tech = classify_finding(
+            response.get("title", ""),
+            response.get("body", ""),
+            "/",
+            response.get("server", ""),
+            response.get("status", 0),
+            response.get("headers"),
+        )
+
+        for item in tech:
+            tech_set.add(item)
+
+        if not response.get("auth"):
+            score, severity, reasons = score_endpoint(host, port, response, tech, response.get("extra_paths", []))
+            if score > summary["max_score"]:
+                summary["max_score"] = score
+                summary["max_severity"] = severity
+                summary["max_reasons"] = reasons
+
+    summary["tech"] = sorted(tech_set)
+    summary["titles"] = titles[:3]
+    summary["auth_ports"] = sorted(summary["auth_ports"])
+    summary["noauth_ports"] = sorted(summary["noauth_ports"])
+
+    return summary
+
+
+class LiveTriage:
+    def __init__(self, total, enabled=True, progress_every=100, open_feed=False):
+        self.total = total
+        self.enabled = enabled
+        self.progress_every = max(1, progress_every)
+        self.open_feed = open_feed
+
+        self.started = time.time()
+        self.lock = threading.Lock()
+
+        self.scanned = 0
+        self.open_hosts = 0
+        self.noauth_hosts = 0
+        self.auth_only_hosts = 0
+
+        self.port_counter = Counter()
+        self.tech_counter = Counter()
+        self.status_counter = Counter()
+        self.severity_counter = Counter()
+        self.network_counter = Counter()
+
+        self.highlights = []
+
+    def update(self, host, results):
+        summary = summarize_results_for_live(host, results)
+
+        with self.lock:
+            self.scanned += 1
+
+            if summary["has_results"]:
+                self.open_hosts += 1
+                self.port_counter.update(summary["open_ports"])
+                self.status_counter.update(summary["status_codes"])
+                self.tech_counter.update(summary["tech"])
+
+                if summary.get("network"):
+                    self.network_counter.update([summary["network"]])
+
+                if summary["noauth_ports"]:
+                    self.noauth_hosts += 1
+                    if summary.get("max_severity"):
+                        self.severity_counter.update([summary["max_severity"]])
+
+                    self.highlights.append({
+                        "host": host,
+                        "ports": summary["noauth_ports"],
+                        "severity": summary.get("max_severity") or "Unknown",
+                        "score": summary.get("max_score") or 0,
+                        "tech": summary.get("tech") or [],
+                        "title": (summary.get("titles") or [""])[0],
+                    })
+
+                    self.highlights = sorted(
+                        self.highlights,
+                        key=lambda item: item.get("score", 0),
+                        reverse=True,
+                    )[:10]
+
+                elif summary["auth_ports"]:
+                    self.auth_only_hosts += 1
+
+            if self.enabled:
+                if self.open_feed and summary["has_results"] and not summary["noauth_ports"]:
+                    self.print_open_intel_locked(summary)
+
+                if self.scanned % self.progress_every == 0 or self.scanned == self.total:
+                    self.print_stats_locked()
+
+        return summary
+
+    def print_open_intel_locked(self, summary):
+        ports = ",".join(str(p) for p in summary["open_ports"])
+        auth_ports = ",".join(str(p) for p in summary["auth_ports"]) or "-"
+        tech = ", ".join(summary["tech"][:3]) or "unknown"
+        title = (summary["titles"] or [""])[0]
+        network = summary.get("network") or "unknown-network"
+
+        with PRINT_LOCK:
+            print(
+                f"\n{C.C}[OPEN]{C.N} {summary['host']} ports={ports} auth={auth_ports} "
+                f"tech={tech} network={network}"
+            )
+            if title:
+                print(f"       title: {title[:120]}")
+
+    def print_stats_locked(self):
+        elapsed = max(1, time.time() - self.started)
+        pct = int((self.scanned / max(1, self.total)) * 100)
+        rate = self.scanned / elapsed
+
+        sev = (
+            f"C:{self.severity_counter.get('Critical', 0)} "
+            f"H:{self.severity_counter.get('High', 0)} "
+            f"M:{self.severity_counter.get('Medium', 0)} "
+            f"L:{self.severity_counter.get('Low', 0)}"
+        )
+
+        top_ports = ", ".join(f"{p}:{c}" for p, c in self.port_counter.most_common(5)) or "-"
+        top_tech = ", ".join(f"{t}:{c}" for t, c in self.tech_counter.most_common(5)) or "-"
+        top_networks = ", ".join(f"{n}:{c}" for n, c in self.network_counter.most_common(3)) or "-"
+
+        with PRINT_LOCK:
+            print(
+                f"\n{C.D}[TRIAGE]{C.N} {self.scanned:,}/{self.total:,} ({pct}%) "
+                f"rate={rate:.1f}/s open_hosts={self.open_hosts} "
+                f"noauth={self.noauth_hosts} auth_only={self.auth_only_hosts} severity[{sev}]"
+            )
+            print(f"         top_ports: {top_ports}")
+            print(f"         top_tech:  {top_tech}")
+            print(f"         networks:  {top_networks}")
+
+            if self.highlights:
+                print("         top_hits:")
+                for item in self.highlights[:5]:
+                    tech = ", ".join(item.get("tech", [])[:2]) or "unknown"
+                    ports = ",".join(str(p) for p in item.get("ports", []))
+                    title = item.get("title") or ""
+                    print(
+                        f"           - {item['severity']} score={item['score']} "
+                        f"{item['host']} ports={ports} tech={tech} {title[:70]}"
+                    )
+
+
 def print_results(host, results):
     enrichment = results.get("_enrichment", {})
     filtered = {p: r for p, r in results.items() if not str(p).startswith("_")}
@@ -818,49 +1013,50 @@ def print_results(host, results):
     r0 = noauth[noauth_ports[0]]
     title_str = f" — {C.B}{r0['title']}{C.N}" if r0.get("title") else ""
 
-    print(f"\n{C.G}{C.B}[{len(noauth)} no-auth] {host}{title_str}{C.N}")
+    with PRINT_LOCK:
+        print(f"\n{C.G}{C.B}[{len(noauth)} no-auth] {host}{title_str}{C.N}")
 
-    rdap = enrichment.get("rdap", {}) or {}
-    ptr = (enrichment.get("reverse_dns", {}) or {}).get("ptr")
-    if ptr:
-        print(f"  PTR: {ptr}")
-    if rdap.get("name") or rdap.get("country") or rdap.get("cidr"):
-        print(f"  Network: {rdap.get('name') or 'unknown'} {rdap.get('cidr') or ''} {rdap.get('country') or ''}".strip())
+        rdap = enrichment.get("rdap", {}) or {}
+        ptr = (enrichment.get("reverse_dns", {}) or {}).get("ptr")
+        if ptr:
+            print(f"  PTR: {ptr}")
+        if rdap.get("name") or rdap.get("country") or rdap.get("cidr"):
+            print(f"  Network: {rdap.get('name') or 'unknown'} {rdap.get('cidr') or ''} {rdap.get('country') or ''}".strip())
 
-    domains = enrichment.get("associated_domains", [])[:8]
-    if domains:
-        print(f"  Associated domains: {', '.join(domains)}")
+        domains = enrichment.get("associated_domains", [])[:8]
+        if domains:
+            print(f"  Associated domains: {', '.join(domains)}")
 
-    print(f"  {'─' * 70}")
+        print(f"  {'─' * 70}")
 
-    for port, r in sorted(noauth.items()):
-        tech = classify_finding(r.get("title", ""), r.get("body", ""), "/", r.get("server", ""), r.get("status", 0), r.get("headers"))
-        score, severity, reasons = score_endpoint(host, port, r, tech, r.get("extra_paths", []))
-        server = f" [{r['server']}]" if r.get("server") else ""
-        tag = f" {C.M}{', '.join(tech[:2])}{C.N}" if tech else ""
+        for port, r in sorted(noauth.items()):
+            tech = classify_finding(r.get("title", ""), r.get("body", ""), "/", r.get("server", ""), r.get("status", 0), r.get("headers"))
+            score, severity, reasons = score_endpoint(host, port, r, tech, r.get("extra_paths", []))
+            server = f" [{r['server']}]" if r.get("server") else ""
+            tag = f" {C.M}{', '.join(tech[:2])}{C.N}" if tech else ""
 
-        sev_color = C.R if severity in ("Critical", "High") else C.Y if severity == "Medium" else C.G
-        print(f"  {sev_color}{severity:<8}{C.N} score={score:<3} {C.G}✔{C.N} :{port} ({r['status']}, {r.get('size', 0)}B){server}{tag}")
+            sev_color = C.R if severity in ("Critical", "High") else C.Y if severity == "Medium" else C.G
+            print(f"  {sev_color}{severity:<8}{C.N} score={score:<3} {C.G}✔{C.N} :{port} ({r['status']}, {r.get('size', 0)}B){server}{tag}")
 
-        if r.get("title"):
-            print(f"      title: {r.get('title')}")
-        if r.get("final_url") and r.get("final_url") != r.get("url"):
-            print(f"      final: {r.get('final_url')}")
-        if reasons:
-            print(f"      reasons: {', '.join(reasons)}")
+            if r.get("title"):
+                print(f"      title: {r.get('title')}")
+            if r.get("final_url") and r.get("final_url") != r.get("url"):
+                print(f"      final: {r.get('final_url')}")
+            if reasons:
+                print(f"      reasons: {', '.join(reasons)}")
 
-        for path in r.get("extra_paths", [])[:5]:
-            print(f"      {C.D}{path}{C.N}")
+            for path in r.get("extra_paths", [])[:5]:
+                print(f"      {C.D}{path}{C.N}")
 
-        links = r.get("links", [])[:5]
-        if links:
-            print(f"      links:")
-            for link in links:
-                print(f"        {C.D}{link}{C.N}")
+            links = r.get("links", [])[:5]
+            if links:
+                print(f"      links:")
+                for link in links:
+                    print(f"        {C.D}{link}{C.N}")
 
-    if authed:
-        authed_str = ", ".join(f":{p}" for p in authed)
-        print(f"  {C.Y}⚠{C.N} Auth required: {authed_str}")
+        if authed:
+            authed_str = ", ".join(f":{p}" for p in authed)
+            print(f"  {C.Y}⚠{C.N} Auth required: {authed_str}")
 
     return True
 
@@ -1188,6 +1384,10 @@ def main():
         parser.add_argument("--resume", action="store_true", help="Skip hosts already in state file")
         parser.add_argument("--state", default="scan_state.json", help="Resume state file")
 
+        parser.add_argument("--no-live-feed", action="store_true", help="Disable live triage feed")
+        parser.add_argument("--progress-every", type=int, default=100, help="Print live triage every N completed hosts")
+        parser.add_argument("--open-feed", action="store_true", help="Also print open/auth-only service intel as it appears")
+
         args = parser.parse_args()
 
         if args.no_color:
@@ -1242,12 +1442,23 @@ def main():
 
         total = len(targets)
         print(f"  {C.B}{total:,}{C.N} hosts × {len(ports)} ports ({args.threads} threads)")
-        print(f"  Output folder: {output_dir}\n")
+        print(f"  Output folder: {output_dir}")
+        print(f"  Live triage: {'disabled' if args.no_live_feed else f'every {args.progress_every} hosts'}")
+        if args.open_feed:
+            print(f"  Open feed: enabled")
+        print()
 
         done_count = 0
         found_any = False
         all_reports = []
         delay_sec = args.delay / 1000.0
+
+        triage = LiveTriage(
+            total=total,
+            enabled=not args.no_live_feed,
+            progress_every=args.progress_every,
+            open_feed=args.open_feed,
+        )
 
         def scan_ip(ip):
             nonlocal done_count
@@ -1271,10 +1482,6 @@ def main():
             if delay_sec:
                 time.sleep(delay_sec)
 
-            if total > 10 and done_count % max(1, total // 100) == 0:
-                pct = done_count * 100 // total
-                print(f"  {C.D}Progress: {done_count:,}/{total:,} ({pct}%){C.N}", end="\r")
-
             return ip, results
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as ex:
@@ -1283,6 +1490,8 @@ def main():
             for fut in concurrent.futures.as_completed(futmap):
                 try:
                     ip, results = fut.result()
+                    triage.update(ip, results)
+
                     if results:
                         found = print_results(ip, results)
                         if found:
@@ -1292,9 +1501,6 @@ def main():
                                 all_reports.append(rpt)
                 except Exception:
                     pass
-
-        if total > 10:
-            print(f"  {' ' * 80}", end="\r")
 
         if args.screenshots and all_reports:
             print(f"\n{C.C}[*] Capturing screenshots for findings...{C.N}")
@@ -1326,6 +1532,8 @@ def main():
             "sample": args.sample,
             "threads": args.threads,
             "fast": args.fast,
+            "progress_every": args.progress_every,
+            "open_feed": args.open_feed,
         }
 
         if all_reports:
