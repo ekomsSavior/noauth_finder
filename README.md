@@ -1,6 +1,6 @@
 # NoAuth Finder
 
-**Find unauthenticated web interfaces — local network or internet-scale**
+**Find unauthenticated web interfaces during authorized testing**
 
 [![ek0ms](https://img.shields.io/badge/ek0ms-green)](ek0ms)
 
@@ -8,199 +8,382 @@
 
 ## What It Does
 
-Scans any IP range for web interfaces that don't require a login. If it's serving content and there's no auth gate, you'll know it.
+NoAuth Finder scans IPs, hostnames, CIDRs, or scope files for web interfaces that are reachable without authentication.
 
-| Scope | Example | Hosts |
-|-------|---------|-------|
-| Single host | `python3 noauth_finder.py 10.0.0.42` | 1 |
-| Local subnet | `python3 noauth_finder.py 192.168.1.0/24` | 254 |
-| Large range | `python3 noauth_finder.py 10.0.0.0/16` | 65,534 |
-| Internet sweep | `python3 noauth_finder.py 1.0.0.0/8 --sample 50000` | 16M+ sampled |
-| CIDR file | `python3 noauth_finder.py file:ranges.txt` | Unlimited |
+It is built for professional security testing, internal network reviews, external attack surface checks, lab assessment, and team evidence collection.
 
-### Finds things like:
-
-| Type | Examples |
-|------|----------|
-| C2 Panels | botnet dashboards, agent consoles |
-| Infrastructure | Kubernetes, Grafana, Prometheus, Portainer, Jenkins |
-| Network Gear | Routers, APs, ESXi, Webmin, Cockpit |
-| IoT/Embedded | Cameras, printers, NAS (Synology/QNAP), Pi-hole |
-| Databases | phpMyAdmin, Adminer, Mongo Express, Redis Commander |
-| Dev Tools | Netdata, Node-RED, OctoPrint, Syncthing |
-| Web Apps | WordPress, Nextcloud, Jellyfin, Plex |
-| Custom APIs | Any `/api/state`, `/api/command`, `/api/config` left open |
+The tool checks common web/admin ports, probes useful admin/API paths, fingerprints technologies, scores risk, saves evidence, and exports findings in JSON, CSV, HTML, and Markdown.
 
 ---
 
-## Features
+## Finds Things Like
 
-- Session reuse for connection pooling and performance
-- IPv6 support with `--ipv6` flag
-- Response body hashing for deduplication
-- Multiple output formats: JSON, CSV, HTML
-- CIDR exclusion ranges with `--exclude`
-- Color control with `--no-color` flag
-- Graceful KeyboardInterrupt handling with partial report saving
-- Rate limiting with `--delay MS`
-- Random sampling and random host order for stealth
-- Deep path probing on all unauthenticated services
-- Automatic technology identification (40+ signatures)
-- Critical path detection (api/state, api/control, shell, config)
+| Type | Examples |
+|---|---|
+| Admin Panels | dashboards, consoles, management pages |
+| Infrastructure | Kubernetes, Grafana, Prometheus, Portainer, Jenkins |
+| Network Gear | routers, access points, ESXi, Webmin, Cockpit |
+| IoT / Embedded | cameras, printers, NAS, Pi-hole |
+| Databases / Data Tools | phpMyAdmin, Adminer, Elasticsearch, OpenSearch, Kibana |
+| DevOps / Dev Tools | GitLab, Harbor, ArgoCD, Airflow, Nexus, Artifactory |
+| API / Debug Surfaces | Swagger, OpenAPI, Spring Boot Actuator, `/metrics`, `/config` |
+| Custom Apps | open dashboards, status pages, exposed APIs |
+
+---
+
+## Key Features
+
+- Single host, CIDR, hostname, or scope-file scanning
+- Public-scope safety gate with `--allow-public`
+- Common web/admin port scanning
+- Optional top-10 web port mode
+- Deep path probing for admin, config, API, debug, and sensitive paths
+- Smarter auth detection
+- Technology fingerprinting
+- Risk scoring and severity labels
+- Reverse DNS / PTR enrichment
+- RDAP network/org enrichment
+- TLS SAN domain discovery
+- Associated domain and link extraction
+- Response body hashing
+- Secret-like content and stack trace detection
+- Resume mode with state file
+- Per-host timeout budget
+- Optional screenshots
+- Evidence folders per finding
+- Team exports:
+  - JSON
+  - CSV
+  - HTML
+  - Markdown
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/ekomsSavior/NoAuth-Finder.git
+cd NoAuth-Finder
+pip install requests
+```
+
+Optional screenshot support:
+
+```bash
+pip install playwright
+python3 -m playwright install chromium
+```
 
 ---
 
 ## Quick Start
 
-```bash
-git clone https://github.com/ekomsSavior/NoAuth-Finder.git
-cd NoAuth-Finder
-pip install requests 
+### Scan a single private IP
 
-# Single host
+```bash
 python3 noauth_finder.py 192.168.1.100
-
-# Local subnet with deep admin path probing
-python3 noauth_finder.py 192.168.1.0/24 --deep
-
-# Save results as JSON
-python3 noauth_finder.py 192.168.1.0/24 --report findings.json
 ```
 
----
-
-## Internet-Scale Scanning
+### Scan a local subnet
 
 ```bash
-# Scan with random sampling (avoids sequential patterns)
-python3 noauth_finder.py 1.0.0.0/8 --sample 50000 --random
-
-# Scan only top 10 web ports for speed
-python3 noauth_finder.py 1.0.0.0/8 --sample 100000 --ports top10 --random
-
-# Scan from a file of CIDR ranges (e.g., country ASN blocks)
-python3 noauth_finder.py file:asn_blocks.txt --sample 5000
-
-# Rate-limited scan (be polite to the internet)
-python3 noauth_finder.py 1.0.0.0/8 --sample 10000 --delay 50 --random
-
-# Exclude specific ranges (e.g., your own IP space)
-python3 noauth_finder.py 0.0.0.0/0 --sample 10000 --exclude 10.0.0.0/8,192.168.0.0/16
-
-# Save as CSV for spreadsheet analysis
-python3 noauth_finder.py 192.168.1.0/24 --report results.csv --output-format csv
-
-# Save as HTML report
-python3 noauth_finder.py 192.168.1.0/24 --report report.html --output-format html
-
-# Disable colors for log files
-python3 noauth_finder.py 192.168.1.0/24 --no-color
+python3 noauth_finder.py 192.168.1.0/24
 ```
 
-When scanning ranges larger than /8 (>16 million IPs), the tool will refuse to run without `--sample` to prevent accidental massive scans. Always sample when scanning internet ranges.
+### Scan a public IP in authorized scope
 
-### CIDR File Format
-
+```bash
+python3 noauth_finder.py 134.209.128.139 --allow-public
 ```
-# Country ASN blocks — one CIDR per line, # comments allowed
-1.0.0.0/24
-5.0.0.0/16
-8.0.0.0/8
+
+### Scan only top web ports
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --top10
+```
+
+### Fast mode
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --fast
+```
+
+### Save team evidence
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --output-dir noauth_results
+```
+
+### Capture screenshots
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --screenshots
 ```
 
 ---
 
-## Usage
+## Scope Files
 
+You can scan from a scope file:
+
+```bash
+python3 noauth_finder.py --scope-file scope.txt
 ```
-positional arguments:
-  target                CIDR (192.168.1.0/24), IP, hostname,
-                        or file:ranges.txt (one CIDR per line)
 
-options:
-  --ports PORTS         Ports: 'web' (~50), 'top10' (80,443,8080,8443,
-                        8888,9090,3000,5000,8000,9000), or comma list
-  --timeout TIMEOUT     Request timeout in seconds (default: 5)
-  --threads THREADS     Thread count (default: 50)
-  --deep                Probe admin paths on every found service
-  --report REPORT       Save report to file (JSON/CSV/HTML)
-  --fast                Skip deep path probing
-  --random              Randomize host scan order (stealth)
-  --sample N            Randomly sample N IPs from CIDR range
-  --delay MS            Delay in ms between hosts (rate limiting)
-  --top10               Shorthand for --ports top10
-  --ipv6                Enable IPv6 scanning
-  --output-format       Output format: json, csv, html (default: json)
-  --no-color            Disable colored output
-  --exclude CIDRS       CIDR ranges to exclude (comma-separated)
+Example `scope.txt`:
+
+```text
+192.168.1.0/24
+10.10.10.5
+example.internal
+```
+
+You can also use the legacy `file:` format:
+
+```bash
+python3 noauth_finder.py file:ranges.txt
 ```
 
 ---
 
-## Example Output
+## Public Scope Safety
 
+NoAuth Finder refuses to scan public IPs unless you explicitly allow it.
+
+```bash
+python3 noauth_finder.py 134.209.128.139
 ```
-$ python3 noauth_finder.py 0.0.0.0/0 --sample 10000 --ports top10
 
-███▄▄▄▄    ▄██████▄          ▄████████ ███    █▄      ███        ▄█    █▄    
-███▀▀▀██▄ ███    ███        ███    ███ ███    ███ ▀█████████▄   ███    ███   
-███   ███ ███    ███        ███    ███ ███    ███    ▀███▀▀██   ███    ███   
-███   ███ ███    ███        ███    ███ ███    ███     ███   ▀  ▄███▄▄▄▄███▄▄ 
-███   ███ ███    ███      ▀███████████ ███    ███     ███     ▀▀███▀▀▀▀███▀  
-███   ███ ███    ███        ███    ███ ███    ███     ███       ███    ███   
-███   ███ ███    ███        ███    ███ ███    ███     ███       ███    ███   
- ▀█   █▀   ▀██████▀         ███    █▀  ████████▀     ▄████▀     ███    █▀    
-                                                                             
-  No-Auth Web UI Finder  ·  internet-scale  ·  by: ek0ms savi0r
+This will stop and warn you.
 
-  ⚠ 0.0.0.0/0 = 4,294,967,296 IPs. Sampling recommended.
+To scan authorized public scope:
 
-[!] INTERNET-SCALE SCAN DETECTED
+```bash
+python3 noauth_finder.py 134.209.128.139 --allow-public
+```
 
-  This will probe hosts across the open internet.
-  • Use --sample N to limit hosts scanned
-  • Use --random to avoid detection patterns
-  • Use --delay MS to rate-limit requests (be polite)
-  • Expect many timeouts — internet hosts are unreliable
-  • Port 80/443 only recommended for internet-wide sweeps
+---
 
-  10,000 hosts × 10 ports (50 threads) — 10000 sampled
+## Examples
 
-  Progress: 100/10,000 (1%)
-[2 no-auth] 199.11.11.169 — Welcome to nginx!
-  ───────────────────────────────────────────────────────
-  ✔ :80 (200, 612B) [nginx] Nginx
-      /login
-      /admin
-      /dashboard
-  ✔ :8443 (200, 612B) [nginx] Nginx
+### Public authorized target with default output
 
-  Progress: 200/10,000 (2%)
-[2 no-auth] 104.111.111.67
-  ───────────────────────────────────────────────────────
-  ✔ :80 (400, 310B) [AkamaiGHost]
-  ✔ :443 (400, 310B) [AkamaiGHost]
+```bash
+python3 noauth_finder.py 134.209.128.139 --allow-public
+```
 
-[2 no-auth] 45.111.111.241 
-  ───────────────────────────────────────────────────────
-  ✔ :80 (400, 552B) [nginx] Nginx
-  ✔ :443 (200, 1285B) [nginx] Nginx
+### Public target with screenshots
+
+```bash
+python3 noauth_finder.py 134.209.128.139 --allow-public --screenshots
+```
+
+### CIDR with exclusions
+
+```bash
+python3 noauth_finder.py 10.0.0.0/8 --exclude 10.10.0.0/16,10.20.0.0/16
+```
+
+### Randomized scan order
+
+```bash
+python3 noauth_finder.py 10.0.0.0/16 --random
+```
+
+### Sample a large CIDR
+
+```bash
+python3 noauth_finder.py 1.0.0.0/8 --allow-public --sample 50000 --random --top10
+```
+
+### Rate-limited scan
+
+```bash
+python3 noauth_finder.py 1.0.0.0/8 --allow-public --sample 10000 --delay 50 --random
+```
+
+### Resume a scan
+
+```bash
+python3 noauth_finder.py 10.0.0.0/16 --resume --state scan_state.json
+```
+
+### Per-host timeout budget
+
+```bash
+python3 noauth_finder.py 10.0.0.0/16 --host-timeout 20
+```
+
+---
+
+## Output Folder
+
+By default, results are saved under:
+
+```text
+noauth_results/
+```
+
+Generated structure:
+
+```text
+noauth_results/
+├── findings.json
+├── findings.csv
+├── findings.html
+├── findings.md
+├── evidence/
+│   └── <host_port_severity_score>/
+│       ├── finding.json
+│       ├── headers.json
+│       ├── body_preview.txt
+│       └── links.txt
+├── screenshots/
+└── raw/
+```
+
+---
+
+## Example Terminal Output
+
+```text
+[3 no-auth] 134.209.128.139 — Apache2 Ubuntu Default Page: It works
+Network: DIGITALOCEAN-134-209-0-0 ['134.209.0.0/16']
+  Associated domains: 134.209.128.139, bugs.launchpad.net, fonts.googleapis.com, httpd.apache.org
+  ──────────────────────────────────────────────────────────────────────
+  Low      score=15  ✔ :80 (200, 10671B) [Apache/2.4.52 (Ubuntu)] Apache
+      title: Apache2 Ubuntu Default Page: It works
+      reasons: public_ip
+      links:
+        http://134.209.128.139:80/icons/ubuntu-logo.png
+        http://134.209.128.139:80/manual
+        http://httpd.apache.org/docs/2.4/mod/mod_userdir.html
+
+  Medium   score=25  ✔ :8080 (200, 90997B)
+      title: Visual Schedule Builder - KCTCS
+      final: http://134.209.128.139:8080/criteria.jsp
+      reasons: public_ip, nonstandard_web_port
       /index.html
-      /api
-
-[1 no-auth] 23.111.111.213 
-  ───────────────────────────────────────────────────────
-  ✔ :80 (404, 2597B) [nginx] Nginx
-      /index.html
-
-[+] Done. Found hosts with unauthenticated UIs.
-
-  Report saved: findings.json (47 hosts)
 ```
 
 ---
 
-## Ethical Use ONLY
+## Risk Scoring
 
-For authorized testing and educational purposes only.
+NoAuth Finder assigns a score and severity to each unauthenticated endpoint.
 
+| Severity | Score Range | Meaning |
+|---|---:|---|
+| Low | 0–19 | Public page or low-signal open web UI |
+| Medium | 20–39 | Nonstandard port, admin language, useful metadata |
+| High | 40–59 | Sensitive paths, high-value tech, exposed API surfaces |
+| Critical | 60+ | Secret-like content, dangerous paths, critical admin exposure |
+
+Score reasons may include:
+
+```text
+public_ip
+nonstandard_web_port
+sensitive_path_accessible
+secret_like_content
+stacktrace_detected
+json_endpoint
+high_value_admin_tech
+admin_or_dashboard_language
+metrics_exposed
+```
+
+---
+
+## Enrichment
+
+For each host, the tool can collect:
+
+- Reverse DNS / PTR
+- RDAP network name
+- RDAP CIDR
+- Country
+- TLS certificate SAN domains
+- Associated domains from links and TLS
+- Associated URLs discovered from page links
+- Redirect/final URL chains
+
+This helps identify shared hosting, SaaS platforms, exposed tenants, linked apps, and infrastructure ownership.
+
+---
+
+## Reports
+
+### JSON
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --output-format json
+```
+
+### CSV
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --output-format csv
+```
+
+### HTML
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --output-format html
+```
+
+### Markdown
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --output-format md
+```
+
+You can also write a separate Markdown report:
+
+```bash
+python3 noauth_finder.py 192.168.1.0/24 --markdown-report report.md
+```
+
+---
+
+## Options
+
+| Option | Description |
+|---|---|
+| `target` | CIDR, IP, hostname, or `file:ranges.txt` |
+| `--scope-file FILE` | File with CIDRs/IPs/hostnames, one per line |
+| `--allow-public` | Allow scanning public IP space |
+| `--ports web` | Scan default web/admin ports |
+| `--ports top10` | Scan top 10 common web ports |
+| `--ports 80,443,8080` | Custom comma-separated port list |
+| `--top10` | Shorthand for `--ports top10` |
+| `--timeout N` | Request timeout in seconds |
+| `--host-timeout N` | Per-host timeout budget in seconds |
+| `--threads N` | Thread count |
+| `--fast` | Skip deeper path probing |
+| `--random` | Randomize host scan order |
+| `--sample N` | Randomly sample N IPs from CIDR range |
+| `--delay MS` | Delay in milliseconds between hosts |
+| `--exclude CIDRS` | Comma-separated CIDRs to exclude |
+| `--resume` | Skip completed hosts using state file |
+| `--state FILE` | Resume state file |
+| `--screenshots` | Capture screenshots for findings |
+| `--output-dir DIR` | Evidence/output folder |
+| `--report FILE` | Save primary report path |
+| `--output-format` | `json`, `csv`, `html`, or `md` |
+| `--markdown-report FILE` | Also write a Markdown report |
+| `--ipv6` | Enable IPv6 scanning |
+| `--no-color` | Disable colored terminal output |
+
+
+---
+
+## Disclaimer
+
+This tool is intended for authorized security testing, research, education, and defensive assessment only.
+
+---
+
+## Author
+
+Built by **ek0ms savi0r**.
