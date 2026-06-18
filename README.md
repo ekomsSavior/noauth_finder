@@ -383,9 +383,6 @@ python3 noauth_finder.py 192.168.1.0/24 --markdown-report report.md
 ## Disclaimer
 
 This tool is intended for authorized security testing, research, education, and defensive assessment only.
-
 ---
 
-## Author
-
-Built by **ek0ms savi0r**.
+<img width="540" height="148" alt="noauth" src="https://github.com/user-attachments/assets/6cddbc73-ece1-429e-b630-c417d1eabb23" />
