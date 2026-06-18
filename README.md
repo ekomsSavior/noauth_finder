@@ -1,4 +1,6 @@
 # NoAuth Finder
+<img width="540" height="148" alt="noauth" src="https://github.com/user-attachments/assets/af5b178a-2ac5-4144-a3bd-f06df18b0da6" />
+
 
 **Find unauthenticated web interfaces during authorized testing**
 
